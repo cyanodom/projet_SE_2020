@@ -1,0 +1,9 @@
+*
+!client/
+!daemon/
+!*.c
+!*.h
+!makefile
+!*.conf
+!*.pdf
+!.gitignore
