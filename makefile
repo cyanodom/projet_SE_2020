@@ -23,7 +23,7 @@ $(EXEC_CLIENT): $(OBJECTS_CLIENT)
 	$(CC) $(OBJECTS_CLIENT) $(LDFLAGS) -o $(EXEC_CLIENT)
 
 $(clientDir)/client.o: client.c
-
+ 
 #SERVER
 $(EXEC_DAEMON): $(OBJECTS_DAEMON)
 	$(CC) $(OBJECTS_DAEMON) $(LDFLAGS) -o $(EXEC_DAEMON)
