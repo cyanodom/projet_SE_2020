@@ -1,6 +1,6 @@
 *
-!client/
-!daemon/
+!src/client/
+!src/daemon/
 !*.c
 !*.h
 !makefile

@@ -1,5 +1,5 @@
-clientDir = client/
-daemonDir = daemon/
+clientDir = src/client/
+daemonDir = src/daemon/
 
 CC = gcc
 LDFLAGS =
@@ -21,9 +21,11 @@ clean:
 #CLIENT
 $(EXEC_CLIENT): $(OBJECTS_CLIENT)
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $(EXEC_CLIENT)
+
 $(clientDir)/client.o: client.c
 
 #SERVER
 $(EXEC_DAEMON): $(OBJECTS_DAEMON)
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $(EXEC_DAEMON)
+
 $(daemonDir)/daemon.o: daemon.c load_conf.c
