@@ -7,3 +7,4 @@
 !*.conf
 !*.pdf
 !.gitignore
+!daemon.conf
