@@ -31,9 +31,9 @@
 
 static void load_conf__default(size_t *max_thread_nb, size_t *min_thread_nb,
     size_t *max_connect_per_thread, size_t *shm_size);
-
 static int load_conf__read_file(size_t *max_thread_nb, size_t *min_thread_nb,
     size_t *max_connect_per_thread, size_t *shm_size);
+
 
 int load_conf_file(size_t *max_thread_nb, size_t *min_thread_nb,
     size_t *max_connect_per_thread, size_t *shm_size) {
@@ -51,6 +51,12 @@ int load_conf_file(size_t *max_thread_nb, size_t *min_thread_nb,
       shm_size);
   }
 
+  if (*min_thread_nb > *max_thread_nb) {
+    PRINT_ERR("%s : %s", "load_conf_file",
+        MIN_THREAD " ne peut être supérieur à " MAX_THREAD);
+    return LOAD_CONF_FAILURE;
+  }
+
   return LOAD_CONF_SUCCESS;
 }
 
@@ -60,14 +66,14 @@ int load_conf__read_file(size_t *max_thread_nb, size_t *min_thread_nb,
 
   int fd = open(CONF_FILE_NAME, O_RDONLY);
   if (fd == -1) {
-    PRINT_WARN("%s : %s ", CONF_FILE_NAME, strerror(errno));
+    PRINT_WARN("%s : %s", CONF_FILE_NAME, strerror(errno));
     return FUN_UNABLE_TO_OPEN;
   }
 
   struct stat fstat_struct;
   int fstat_ret = fstat(fd, &fstat_struct);
   if (fstat_ret == -1) {
-    perror("fstat");
+    PRINT_WARN("%s : %s : %s", "load_conf__read_file", "fstat", strerror(errno));
     buffer_size = 1024;
   } else {
     buffer_size = fstat_struct.st_size;
@@ -162,7 +168,8 @@ int load_conf__read_file(size_t *max_thread_nb, size_t *min_thread_nb,
               } else if (strcmp(str, SHM_SIZE) == 0) {
                 *shm_size = value;
               } else {
-                PRINT_WARN("%s", "identifieur non reconnu !");
+                PRINT_WARN("%s : %s : %s : %s", "load_conf__read_file",
+                  CONF_FILE_NAME, "identifieur non reconnu !", str);
                 return FUN_FAILURE;
               }
               indexStr = 0;
@@ -211,13 +218,13 @@ int load_conf__read_file(size_t *max_thread_nb, size_t *min_thread_nb,
   }
 
   if (n == -1) {
-    perror("read");
+    PRINT_ERR("%s : %s : %s", "load_conf__read_file", "read", strerror(errno));
     return FUN_FAILURE;
   }
 
   if (close(fd) == -1) {
-    perror("close");
-    exit(EXIT_FAILURE);
+    PRINT_ERR("%s : %s : %s", "load_conf__read_file", "close", strerror(errno));
+    return FUN_FAILURE;
   }
 
   return FUN_SUCCESS;

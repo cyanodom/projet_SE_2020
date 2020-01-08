@@ -12,7 +12,7 @@ VPATH = $(clientDir):$(daemonDir):$(toolsDir)
 
 OBJECTS_CLIENT = $(clientDir)/client.o
 OBJECTS_DAEMON = $(daemonDir)/daemon.o $(daemonDir)/load_conf.o 							 \
-#	$(daemonDir)/pool_thread.o
+	$(daemonDir)/pool_thread.o $(daemonDir)/pipe.o
 
 EXEC_CLIENT = client
 EXEC_DAEMON = daemon
@@ -36,3 +36,4 @@ $(daemonDir)/daemon.o: daemon.c load_conf.h
 $(daemonDir)/load_conf.o: load_conf.c load_conf.h
 $(daemonDir)/pool_thread.o: pool_thread.c pool_thread.h
 	$(COMPILE.c) -pthread $(OUTPUT_OPTION) $<
+$(daemonDir)/pipe.o: pipe.c pipe.h

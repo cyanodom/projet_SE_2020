@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #define PRINT_DEBUG(FORMAT, DEBUG_LEVEL, ...) fprintf(stderr, "*** %s" __FILE__ \
     " : " FORMAT "\n", DEBUG_LEVEL, __VA_ARGS__);
 
@@ -7,3 +9,4 @@
 #define XSTR(X) STR(STR)
 
 #define WORD_LEN_MAX 63
+#define BASE_PIPE_NAME "pipe0"
