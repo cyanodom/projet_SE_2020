@@ -13,11 +13,13 @@
 #include "macros.h"
 #include "pool_thread.h"
 
-#define STR_PREFIX_THREAD " + "
+#define STR_PREFIX_THREAD " [T] - "
 #define STR_THREAD_WORK STR_PREFIX_THREAD "Un thread travaille"
 #define STR_THREAD_WAIT STR_PREFIX_THREAD "Un thread attends du travail"
 #define STR_THREAD_DONE STR_PREFIX_THREAD "Un thread a fini son travail"
-#define STR_THREAD_DEAD STR_PREFIX_THREAD "Un thread s'est détruit"
+#define STR_thread_need_join STR_PREFIX_THREAD "Un thread s'est détruit"
+
+#define STR_THREAD_SHOULD_WORK "Une requête a été envoyée à un thread"
 
 #define FD_KILL -1
 #define BASE_SHM_NAME "shm_thread_"
@@ -26,6 +28,7 @@
 
 struct pool_thread {
   pthread_t *threads;
+  bool *threads_can_create;
   size_t max_connect_per_thread;
   size_t min_thread_nb;
   size_t max_thread_nb;
@@ -39,25 +42,22 @@ struct pool_thread {
 
   sem_t *threads_need_to_work;
   sem_t *threads_work;
-  sem_t *threads_dead;
+  sem_t *threads_need_join;
 };
 
 typedef struct thread_arg {
-  sem_t *shm_get;
   sem_t *shm_sent;
 
   sem_t *thread_need_to_work;
   sem_t *thread_work;
-  sem_t *thread_dead;
+  sem_t *thread_need_join;
   int *critical_shm_fd;
   char *critical_shm_name;
 } thread_arg;
 
 static void *pool_thread__run(void *param);
-static int pool_thread__shm_name_open(pool_thread *pool, char *name,
-    int *shm_fd);
-static int pool_thread__send_shm(pool_thread *pool, char *shm_name, int fd,
-    size_t index_thread);
+static int pool_thread__shm_name_open(char *name, int *shm_fd);
+static int pool_thread__send_shm(pool_thread *pool, size_t index_thread);
 static int pool_thread__create_thread(pool_thread *pool, size_t i);
 static int pool_thread__where_can_create_thread(pool_thread *pool,
     size_t *index_thread);
@@ -86,6 +86,11 @@ int pool_thread_init(pool_thread **pool_ret, size_t min_thread_nb,
     PRINT_ERR("%s : %s", "malloc", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
+  pool->threads_can_create = malloc(sizeof(bool) * max_thread_nb);
+  if (pool->threads_can_create == NULL) {
+    PRINT_ERR("%s : %s", "malloc", strerror(errno));
+    return POOL_THREAD_FAILURE;
+  }
   pool->threads_need_to_work = malloc(sizeof(sem_t) * max_thread_nb);
   if (pool->threads_need_to_work == NULL) {
     PRINT_ERR("%s : %s", "malloc", strerror(errno));
@@ -96,8 +101,8 @@ int pool_thread_init(pool_thread **pool_ret, size_t min_thread_nb,
     PRINT_ERR("%s : %s", "malloc", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
-  pool->threads_dead = malloc(sizeof(sem_t) * max_thread_nb);
-  if (pool->threads_dead == NULL) {
+  pool->threads_need_join = malloc(sizeof(sem_t) * max_thread_nb);
+  if (pool->threads_need_join == NULL) {
     PRINT_ERR("%s : %s", "malloc", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
@@ -121,12 +126,9 @@ int pool_thread_init(pool_thread **pool_ret, size_t min_thread_nb,
     }
   }
 
-  //set the ohter threads to dead
+  //set the ohter threads to can create
   while (i < max_thread_nb) {
-    if (sem_init(&pool->threads_dead[i], 0, 1) == -1) {
-      PRINT_ERR("%s : %s", "sem_init", strerror(errno));
-      return POOL_THREAD_FAILURE;
-    }
+    pool->threads_can_create[i] = true;
     ++i;
   }
   return POOL_THREAD_SUCCESS;
@@ -140,7 +142,7 @@ int pool_thread_enroll(pool_thread *pool, char *shm_name) {
   //find a free thread
   for (size_t i = 0; i < pool->max_thread_nb; ++i) {
     int is_dead = 0;
-    if (sem_getvalue(&pool->threads_dead[i], &sem_value) != 0) {
+    if (sem_getvalue(&pool->threads_need_join[i], &is_dead) != 0) {
       PRINT_ERR("%s : %s", "sem_getvalue", strerror(errno));
       return POOL_THREAD_FAILURE;
     }
@@ -153,17 +155,16 @@ int pool_thread_enroll(pool_thread *pool, char *shm_name) {
       if (!work) {
         // this thread is free
         int shm_fd;
-        int pool_thread__shm_name_open_r = pool_thread__shm_name_open(
-            pool, shm_name, &shm_fd);
+        int pool_thread__shm_name_open_r = pool_thread__shm_name_open(pool,
+            shm_name, &shm_fd);
         if (pool_thread__shm_name_open_r != POOL_THREAD_SUCCESS) {
           PRINT_ERR("%s : %d", "pool_thread__shm_name_open",
               pool_thread__shm_name_open_r);
               return POOL_THREAD_FAILURE;
         }
-        printf("send\n");
         int pool_thread__send_shm_r = pool_thread__send_shm(pool, shm_name,
             shm_fd, i);
-            printf("sent\n");
+        PRINT_INFO("%s", STR_THREAD_SHOULD_WORK);
         if (pool_thread__send_shm_r != POOL_THREAD_SUCCESS) {
           PRINT_ERR("%s : %d", "pool_thread__send_shm",
               pool_thread__send_shm_r);
@@ -175,7 +176,9 @@ int pool_thread_enroll(pool_thread *pool, char *shm_name) {
   }
   //there's no available threads, find a place to create a new one
   size_t index_thread;
-  if (pool_thread__where_can_create_thread(pool, &index_thread)) {
+  int pool_thread__where_can_create_thread_r =
+      pool_thread__where_can_create_thread(pool, &index_thread);
+  if (pool_thread__where_can_create_thread_r != POOL_THREAD_SUCCESS) {
     return POOL_THREAD_FAILURE;
   }
   //create it
@@ -207,18 +210,17 @@ int pool_thread_enroll(pool_thread *pool, char *shm_name) {
 
 int pool_thread_manage(pool_thread *pool) {
   for (size_t i = 0; i < pool->max_thread_nb; ++i) {
-    if (pool->threads[i] != NULL) {
-      int sem_value = 0;
-      if (sem_getvalue(&pool->sem_thread_work[i], &sem_value) != 0) {
-        PRINT_ERR("%s : %s", "sem_getvalue", strerror(errno));
+    int is_dead = 0;
+    if (sem_getvalue(&pool->threads_need_join[i], &sem_value) != 0) {
+      PRINT_ERR("%s : %s", "sem_getvalue", strerror(errno));
+      return POOL_THREAD_FAILURE;
+    }
+    if (is_dead) {
+      if (pthread_join(*(pool->threads[i]), NULL) != 0) {
+        PRINT_ERR("%s : %s", "pthread_join", strerror(errno));
         return POOL_THREAD_FAILURE;
       }
-      if (sem_value == THREAD_DEAD) {
-        if (pthread_join(*(pool->threads[i]), NULL) != 0) {
-          PRINT_ERR("%s : %s", "pthread_join", strerror(errno));
-          return POOL_THREAD_FAILURE;
-        }
-      }
+      --pool->nb_threads;
     }
   }
   if (sem_wait(&sem_mutex_nb) == -1) {
@@ -253,7 +255,7 @@ int pool_thread_manage(pool_thread *pool) {
   return POOL_THREAD_SUCCESS;
 }
 //__________________________POOL_THREAD_TOOLS____________________________
-
+//fonction des threads
 void *pool_thread__run(void *param) {
   thread_arg *arg = (thread_arg *) param;
   char shm_name[WORD_LEN_MAX];
@@ -334,47 +336,40 @@ void *pool_thread__run(void *param) {
     exit(EXIT_FAILURE);
   }
   free(arg);
-  for (size_t i = 0; i < THREAD_DEAD; ++i) {
+  for (size_t i = 0; i < thread_need_join; ++i) {
     if (sem_post(arg->sem_thread_work) == -1) {
       PRINT_ERR("%s : %s", "sem_post", strerror(errno));
       exit(EXIT_FAILURE);
     }
   }
-  PRINT_INFO("%s", STR_THREAD_DEAD);
+  PRINT_INFO("%s", STR_thread_need_join);
   pthread_exit(NULL);
 }
 
-int pool_thread__send_shm(pool_thread *pool, char *shm_name, int fd,
+//envois la shm
+int pool_thread__send_shm(pool_thread *pool, char *name, int fd,
     size_t index_thread) {
-  if (sem_wait(&sem_thread_get) != 0) {
-    PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+  if (sem_post(pool->shm_send) != 0) {
+    PRINT_ERR("%s : %s", "sem_post", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
-  if (sem_wait(&sem_mutex_shm) != 0) {
-    PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-    return POOL_THREAD_FAILURE;
-  }
-  global_shm_fd = fd;
+  pool->critical_shm_fd = fd;
   //copy the shm_name into global_shm_name
   size_t i = 0;
   if (shm_name[0] != 0) {
     do {
-      global_shm_name[i] = shm_name[i];
+      pool->critical_shm_name[i] = name[i];
       ++i;
-    } while (shm_name[i] != 0);
+    } while (name[i] != 0);
   }
-  global_shm_name[i] = 0;
-  if (sem_post(&sem_mutex_shm) != 0) {
+  pool->critical_shm_name[i] = 0;
+  //dire au thread de travailler
+  if (sem_post(&pool->threads_need_to_work[index_thread]) != 0) {
     PRINT_ERR("%s : %s", "sem_post", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
-  for (size_t i = 0; i < THREAD_WORK; ++i) {
-    if (sem_post(&pool->sem_thread_work[index_thread]) != 0) {
-      PRINT_ERR("%s : %s", "sem_post", strerror(errno));
-      return POOL_THREAD_FAILURE;
-    }
-  }
-  if (sem_post(&sem_daemon_send) != 0) {
+  //attendre qu'il travaille et donc qu'il ai récupéré la shm
+  if (sem_wait(&pool->threads_work[index_thread]) != 0) {
     PRINT_ERR("%s : %s", "sem_post", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
@@ -389,40 +384,49 @@ int pool_thread__create_thread(pool_thread *pool, size_t i) {
 
   arg->thread_need_to_work = &pool->threads_need_to_work[i];
   arg->thread_work = &pool->threads_work[i];
-  arg->thread_dead = &pool->threads_dead[i];
+  arg->thread_need_join = &pool->threads_need_join[i];
 
   arg->critical_shm_name = &pool->critical_shm_name;
   arg->critical_shm_fd = &pool->critical_shm_fd;
 
-  if (sem_init(pool->thread_work, 0, 0) != -1) {
+  if (sem_init(arg->thread_work, 0, 0) != -1) {
     PRINT_ERR("%s : %s", "sem_init", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
-  if (sem_init(pool->thread_need_to_work, 0, 0) != -1) {
+  if (sem_init(arg->thread_need_to_work, 0, 0) != -1) {
     PRINT_ERR("%s : %s", "sem_init", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
-  if (sem_init(pool->thread_dead, 0, 0) != -1) {
+  if (sem_init(arg->thread_need_join, 0, 0) != -1) {
     PRINT_ERR("%s : %s", "sem_init", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
 
-  int err = pthread_create(pool->threads[i], NULL, pool_thread__run,
+  pool->threads_can_create[i] = false;
+
+  int err = pthread_create(arg->threads[i], NULL, pool_thread__run,
         arg);
   if (err != 0) {
     PRINT_ERR("%s : %s", "pthread_create", strerror(err));
     free(pool->threads[i]);
     pool->threads[i] = NULL;
+    if (sem_post(pool->thread_need_join) != -1) {
+      PRINT_ERR("%s : %s", "sem_init", strerror(errno));
+      return POOL_THREAD_FAILURE;
+    }
     return POOL_THREAD_FAILURE;
   }
+  ++pool->nb_threads;
 
   return POOL_THREAD_SUCCESS;
 }
 
+//trouve un endroit pour créer un thread et le renvois dans index_thread si
+//il existe
 int pool_thread__where_can_create_thread(pool_thread *pool,
     size_t *index_thread) {
   for (size_t i = 0; i < pool->max_thread_nb; ++i) {
-    if (pool->threads[i] == NULL) {
+    if (pool->threads_can_create[index_thread]) {
       *index_thread = i;
       return POOL_THREAD_SUCCESS;
     }
