@@ -102,6 +102,18 @@ int main(void) {
       PRINT_ERR("%s : %s", "open", strerror(errno));
       goto error;
     }
+    //set the file to be closed on exec :
+    if (fcntl(daemon_pipe_fd, F_SETFD, FD_CLOEXEC) == -1) {
+      PRINT_ERR("%s : %s", "fcntl", strerror(errno));
+      goto error;
+    }
+
+    //manage threads
+    int pool_thread_manage_r = pool_thread_manage(pool);
+    if (pool_thread_manage_r != POOL_THREAD_SUCCESS) {
+      PRINT_ERR("%s : %d", "pool_thread_manage", pool_thread_manage_r);
+      goto error;
+    }
 
     //read daemon pipe to get client pipe name
     PRINT_INFO("%s", STR_READ_PIPE_INFORMATIONS);
@@ -137,13 +149,6 @@ int main(void) {
     //send the message
     if (write(client_pipe_fd, shm_name, strlen(shm_name) + 1) == -1) {
       PRINT_ERR("%s : %s", "write", strerror(errno));
-      goto error;
-    }
-
-    //manage threads
-    int pool_thread_manage_r = pool_thread_manage(pool);
-    if (pool_thread_manage_r != POOL_THREAD_SUCCESS) {
-      PRINT_ERR("%s : %d", "pool_thread_manage", pool_thread_manage_r);
       goto error;
     }
 

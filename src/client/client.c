@@ -10,6 +10,8 @@
 #include <stdbool.h>
 
 #include "macros.h"
+#include "load_conf.h"
+#include "shm.h"
 
 #define STR_THE_PIPE "le pipe"
 #define STR_WILL_BE_USED "sera uttilisé"
@@ -21,11 +23,21 @@
 #define FUN_SUCCESS 0
 #define FUN_FAILURE -1
 
+extern shared_memory **shm_obj;
+
 bool exists(char * pipe_name);
 int find_pipe_name(char *pipe_name);
 int generate_pipe_name(char *pipe_name, size_t id);
 
 int main(void) {
+  size_t shm_size;
+  //load the configuration file
+  int load_conf_ret = load_conf_file(NULL, NULL,
+      NULL, &shm_size);
+  if (load_conf_ret != LOAD_CONF_SUCCESS) {
+    PRINT_ERR("%s : %d", "load_conf_file", load_conf_ret);
+    return EXIT_FAILURE;
+  }
   //find the name of the client pipe
   char client_pipe[WORD_LEN_MAX + 1];
   if (find_pipe_name(client_pipe) != FUN_SUCCESS) {
@@ -79,7 +91,51 @@ int main(void) {
     ++length;
   } while (c != '\0' && length < WORD_LEN_MAX);
   printf("%s\n", shm_name);
-  shm_open(shm_name, O_RDWR, S_IRUSR | S_IWUSR);
+  int shm_fd = shm_open(shm_name, O_RDWR, S_IRUSR | S_IWUSR);
+
+  //fully connected________________________________
+
+  size_t real_shm_size = (size_t) (shm_size + SHM_HEADER);
+
+  if (ftruncate(own_fd, (__off_t) real_shm_size) != 0) {
+    PRINT_ERR("%s : %s", "ftruncate", strerror(errno));
+    return EXIT_FAILURE;
+  }
+
+  char *shm_ptr = mmap(NULL, real_shm_size, PROT_READ | PROT_WRITE,
+      MAP_SHARED, shm_fd, 0);
+  if (shm_ptr == MAP_FAILED) {
+    PRINT_ERR("%s : %s", "mmap", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
+
+  shared_memory *shm_obj = (shared_memory *) shm_ptr;
+
+  strcpy(shm_obj->data, "ls");
+
+  if (sem_post(&shm_obj->client_send) != 0) {
+    PRINT_ERR("%s : %s", "sem_post", strerror(errno));
+    return EXIT_FAILURE;
+  }
+
+  if (sem_wait(&shm_obj->thread_send) != 0) {
+    PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+    return EXIT_FAILURE;
+  }
+
+  printf("%s\n", shm_obj->data);
+
+  if (shm_unlink(shm_name) != 0) {
+    PRINT_ERR("%s : %s", "shm_unlink", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
+
+
+
+  if (close(shm_fd) != 0) {
+    PRINT_ERR("%s : %s", "close", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
 
   return EXIT_SUCCESS;
 }

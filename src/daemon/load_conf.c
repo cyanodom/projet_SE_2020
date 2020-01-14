@@ -24,6 +24,7 @@
 
 #define STR_LOAD_FAIL "Le programme n'a pas été en mesure de charger"          \
     " le fichier"
+#define STR_UKN_ID "identifieur non reconnu !"
 //_____________________________strcmp______________________________________
 //  A reason from wich I dont know the origin makes my valgrind say me
 //    that I make a conditionnal jump or move that depends on uninitialized
@@ -69,10 +70,12 @@ int load_conf_file(size_t *max_thread_nb, size_t *min_thread_nb,
       shm_size);
   }
 
-  if (*min_thread_nb > *max_thread_nb) {
-    PRINT_ERR("%s : %s", "load_conf_file",
-        STR_MIN_THREAD " " STR_CANNOT_BE_GREATER_THAN " " STR_MAX_THREAD);
-    return LOAD_CONF_FAILURE;
+  if (min_thread_nb != NULL && max_thread_nb != NULL) {
+    if (*min_thread_nb > *max_thread_nb) {
+      PRINT_ERR("%s : %s", "load_conf_file",
+          STR_MIN_THREAD " " STR_CANNOT_BE_GREATER_THAN " " STR_MAX_THREAD);
+      return LOAD_CONF_FAILURE;
+    }
   }
 
   return LOAD_CONF_SUCCESS;
@@ -178,16 +181,24 @@ int load_conf__read_file(size_t *max_thread_nb, size_t *min_thread_nb,
             str[indexStr] = 0;
             if (isspace(buf[indexBuf])) {
               if (strcmp(STR_MIN_THREAD, str) == 0) {
-                *min_thread_nb = value;
+                if (min_thread_nb != NULL) {
+                  *min_thread_nb = value;
+                }
               } else if (strcmp(STR_MAX_THREAD, str) == 0) {
-                *max_thread_nb = value;
+                if (max_thread_nb != NULL) {
+                  *max_thread_nb = value;
+                }
               } else if (strcmp(STR_MAX_CONNECT_PER_THREAD, str) == 0) {
-                *max_connect_per_thread = value;
+                if (max_connect_per_thread != NULL) {
+                  *max_connect_per_thread = value;
+                }
               } else if (strcmp(STR_SHM_SIZE, str) == 0) {
-                *shm_size = value;
+                if (shm_size != NULL) {
+                  *shm_size = value;
+                }
               } else {
                 PRINT_WARN("%s : %s : %s : %s", "load_conf__read_file",
-                  CONF_FILE_NAME, "identifieur non reconnu !", str);
+                  CONF_FILE_NAME, STR_UKN_ID, str);
                 return FUN_FAILURE;
               }
               indexStr = 0;
@@ -250,8 +261,16 @@ int load_conf__read_file(size_t *max_thread_nb, size_t *min_thread_nb,
 
 void load_conf__default(size_t *max_thread_nb, size_t *min_thread_nb,
     size_t *max_connect_per_thread, size_t *shm_size) {
-  *max_thread_nb = MAX_THREAD_DEFAULT;
-  *min_thread_nb = MIN_THREAD_DEFAULT;
-  *max_connect_per_thread = MAX_CONNECT_PER_THREAD_DEFAULT;
-  *shm_size = SHM_SIZE_DEFAULT;
+  if (max_thread_nb != NULL) {
+    *max_thread_nb = MAX_THREAD_DEFAULT;
+  }
+  if (min_thread_nb != NULL) {
+    *min_thread_nb = MIN_THREAD_DEFAULT;
+  }
+  if (max_connect_per_thread != NULL) {
+    *max_connect_per_thread = MAX_CONNECT_PER_THREAD_DEFAULT;
+  }
+  if (shm_size != NULL) {
+    *shm_size = SHM_SIZE_DEFAULT;
+  }
 }
