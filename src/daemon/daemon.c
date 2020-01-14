@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <signal.h>
 #include <string.h>
 #include <fcntl.h>
 
@@ -24,6 +25,10 @@
 #define STR_PIPE_GET_NAME "Le nom du fichier recu est :"
 #define STR_DISPOSE "Libération des ressources allouées"
 
+static int should_be_killed = false;
+
+static void monitor_signal(int signum);
+
 int main(void) {
   //initialize
   PRINT_INFO("%s", STR_INITIALIZE);
@@ -41,7 +46,19 @@ int main(void) {
   pool_thread *pool;
   char shm_name[WORD_LEN_MAX];
 
-  //set the default actions on signal
+  //set the default actions on SIGINT signal
+  struct sigaction action;
+  action.sa_handler = monitor_signal;
+  action.sa_flags = 0;
+  if (sigfillset(&action.sa_mask) == -1) {
+    perror("sigfillset");
+    exit(EXIT_FAILURE);
+  }
+
+  if (sigaction(SIGINT, &action, NULL) == -1) {
+    perror("sigaction");
+    exit(EXIT_FAILURE);
+  }
 
   //load the configuration file
   PRINT_INFO("%s", STR_LOAD_CONF);
@@ -74,6 +91,9 @@ int main(void) {
   }
 
   while (1) {
+    if (should_be_killed) {
+      goto dispose;
+    }
     //open the daemon pipe
     PRINT_INFO("%s", STR_OPEN_DAEMON_PIPE);
     PRINT_MSG("%s", STR_WAITING_FOR_A_CONNECTION);
@@ -120,6 +140,13 @@ int main(void) {
       goto error;
     }
 
+    //manage threads
+    int pool_thread_manage_r = pool_thread_manage(pool);
+    if (pool_thread_manage_r != POOL_THREAD_SUCCESS) {
+      PRINT_ERR("%s : %d", "pool_thread_manage", pool_thread_manage_r);
+      goto error;
+    }
+
     if (close(daemon_pipe_fd) != 0) {
       PRINT_ERR("%s : %s", "close", strerror(errno));
       goto error;
@@ -153,4 +180,12 @@ dispose:
 
 
   return r;
+}
+
+void monitor_signal(int signum) {
+  if (signum < 0) {
+    PRINT_ERR("%s : %d", "signal error", signum);
+    exit(EXIT_FAILURE);
+  }
+  should_be_killed = true;
 }
