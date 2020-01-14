@@ -19,7 +19,10 @@
 #define STR_THREAD_DONE STR_PREFIX_THREAD "Un thread a fini son travail"
 #define STR_THREAD_DEAD STR_PREFIX_THREAD "Un thread s'est détruit"
 
-
+#define THREAD_DEAD 3
+#define THREAD_WORK 2
+#define THREAD_INIT 1
+#define THREAD_WAIT 0
 #define FD_KILL -1
 #define BASE_SHM_NAME "shm_thread_"
 
@@ -42,6 +45,16 @@ struct pool_thread {
   size_t min_thread_nb;
   size_t shm_size;
 };
+
+typedef struct thread_arg {
+  sem_t *sem_thread_work;
+  sem_t *sem_thread_get;
+  sem_t *sem_daemon_send;
+  sem_t *sem_mutex_shm;
+  sem_t *sem_mutex_nb;
+  int *shm_fd;
+  char *shm_name;
+} thread_arg;
 
 static void *pool_thread__run(void *param);
 static int pool_thread__shm_name_open(char *name, int *shm_fd);
@@ -119,7 +132,7 @@ int pool_thread_dispose(pool_thread **pool) {
   for (size_t i = 0; i < (*pool)->max_thread_nb; ++i) {
     if ((*pool)->threads[i] != NULL) {
       //tell the thread to kill itself
-      int pool_thread__send_shm_r = pool_thread__send_shm(*pool, "\0",
+      int pool_thread__send_shm_r = pool_thread__send_shm(*pool, NULL,
           FD_KILL, i);
       if (pool_thread__send_shm_r != POOL_THREAD_SUCCESS) {
         PRINT_ERR("%s : %d", "pool_thread__send_shm", pool_thread__send_shm_r);
@@ -131,6 +144,7 @@ int pool_thread_dispose(pool_thread **pool) {
         PRINT_ERR("%s : %s", "pthread_join", strerror(pthread_join_r));
         return POOL_THREAD_FAILURE;
       }
+      sem_destroy(&(*pool)->sem_thread_work[i]);
       free((*pool)->threads[i]);
     }
   }
@@ -139,10 +153,10 @@ int pool_thread_dispose(pool_thread **pool) {
   free(*pool);
   *pool = NULL;
 
-  sem_close(&sem_mutex_nb);
-  sem_close(&sem_thread_get);
-  sem_close(&sem_daemon_send);
-  sem_close(&sem_mutex_shm);
+  sem_destroy(&sem_mutex_nb);
+  sem_destroy(&sem_thread_get);
+  sem_destroy(&sem_daemon_send);
+  sem_destroy(&sem_mutex_shm);
   return POOL_THREAD_SUCCESS;
 }
 
@@ -213,7 +227,12 @@ int pool_thread_enroll(pool_thread *pool, char *shm_name) {
 int pool_thread_manage(pool_thread *pool) {
   for (size_t i = 0; i < pool->max_thread_nb; ++i) {
     if (pool->threads[i] != NULL) {
-      if (&pool->sem_thread_work[i] == NULL) {
+      int sem_value = 0;
+      if (sem_getvalue(&pool->sem_thread_work[i], &sem_value) != 0) {
+        PRINT_ERR("%s : %s", "sem_getvalue", strerror(errno));
+        return POOL_THREAD_FAILURE;
+      }
+      if (sem_value == THREAD_DEAD) {
         if (pthread_join(*(pool->threads[i]), NULL) != 0) {
           PRINT_ERR("%s : %s", "pthread_join", strerror(errno));
           return POOL_THREAD_FAILURE;
@@ -255,43 +274,45 @@ int pool_thread_manage(pool_thread *pool) {
 //__________________________POOL_THREAD_TOOLS____________________________
 
 void *pool_thread__run(void *param) {
-  sem_t *sem_work = (sem_t *) param;
+  thread_arg *arg = (thread_arg *) param;
   char shm_name[WORD_LEN_MAX];
   int shm_fd;
-  size_t remaining_work_plus_one = max_connect + 1;
+  size_t remaining_work_plus_one = max_connect + (max_connect == 0 ? 1 : 0);
   //wait to increment global_nb_threads
 
-  if (sem_wait(&sem_mutex_nb) == -1) {
+  if (sem_wait(arg->sem_mutex_nb) == -1) {
     PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
     exit(EXIT_FAILURE);
   }
   ++global_nb_threads;
-  if (sem_post(&sem_mutex_nb) == -1) {
+  if (sem_post(arg->sem_mutex_nb) == -1) {
     PRINT_ERR("%s : %s", "sem_post", strerror(errno));
     exit(EXIT_FAILURE);
   }
   do {
     //wait to work
-    PRINT_INFO("%s", STR_THREAD_WAIT);
-    if (sem_wait(sem_work) == -1) {
-      PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-      exit(EXIT_FAILURE);
+    for (size_t i = 0; i < THREAD_WORK; ++i) {
+      PRINT_INFO("%s", STR_THREAD_WAIT);
+      if (sem_wait(arg->sem_thread_work) == -1) {
+        PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+        exit(EXIT_FAILURE);
+      }
     }
     // now I work, wait to get shm fd
-    if (sem_wait(&sem_daemon_send) == -1) {
+    if (sem_wait(arg->sem_daemon_send) == -1) {
       PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
       exit(EXIT_FAILURE);
     }
     size_t index_str = 0;
     if (global_shm_name[0] != 0) {
       do {
-        shm_name[index_str] = global_shm_name[index_str];
+        shm_name[index_str] = arg->shm_name[index_str];
         ++index_str;
       } while (global_shm_name[index_str] != 0);
     }
     shm_name[index_str] = 0;
     shm_fd = global_shm_fd;
-    if (sem_post(&sem_thread_get) == -1) {
+    if (sem_post(arg->sem_thread_get) == -1) {
       PRINT_ERR("%s : %s", "sem_post", strerror(errno));
       exit(EXIT_FAILURE);
     }
@@ -306,34 +327,38 @@ void *pool_thread__run(void *param) {
         PRINT_ERR("%s : %s", "shm_unlink", strerror(errno));
         exit(EXIT_FAILURE);
       }
-      if (close(shm_fd) != 0) {
+      if (close(*arg->shm_fd) != 0) {
         PRINT_ERR("%s : %s", "close", strerror(errno));
         exit(EXIT_FAILURE);
       }
     }
-    if (remaining_work_plus_one != 0
-        && remaining_work_plus_one != 1) {
+    if (remaining_work_plus_one != 0) {
            --remaining_work_plus_one;
     }
   } while (shm_fd != FD_KILL && remaining_work_plus_one != 1);
 
   //thread need to die
   //wait to decrement global_nb_threads
-  if (sem_wait(&sem_mutex_nb) == -1) {
+  if (sem_wait(arg->sem_mutex_nb) == -1) {
     PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
     //send to me a signal to dispose
     //TODO
     exit(EXIT_FAILURE);
   }
   --global_nb_threads;
-  if (sem_post(&sem_mutex_nb) == -1) {
+  if (sem_post(arg->sem_mutex_nb) == -1) {
     PRINT_ERR("%s : %s", "sem_post", strerror(errno));
     //send to me a signal to dispose
     //TODO
     exit(EXIT_FAILURE);
   }
-  sem_destroy(sem_work);
-  sem_work = NULL;
+  free(arg);
+  for (size_t i = 0; i < THREAD_DEAD; ++i) {
+    if (sem_post(arg->sem_thread_work) == -1) {
+      PRINT_ERR("%s : %s", "sem_post", strerror(errno));
+      exit(EXIT_FAILURE);
+    }
+  }
   PRINT_INFO("%s", STR_THREAD_DEAD);
   pthread_exit(NULL);
 }
@@ -362,9 +387,11 @@ int pool_thread__send_shm(pool_thread *pool, char *shm_name, int fd,
     PRINT_ERR("%s : %s", "sem_post", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
-  if (sem_post(&pool->sem_thread_work[index_thread]) != 0) {
-    PRINT_ERR("%s : %s", "sem_post", strerror(errno));
-    return POOL_THREAD_FAILURE;
+  for (size_t i = 0; i < THREAD_WORK; ++i) {
+    if (sem_post(&pool->sem_thread_work[index_thread]) != 0) {
+      PRINT_ERR("%s : %s", "sem_post", strerror(errno));
+      return POOL_THREAD_FAILURE;
+    }
   }
   if (sem_post(&sem_daemon_send) != 0) {
     PRINT_ERR("%s : %s", "sem_post", strerror(errno));
@@ -374,7 +401,7 @@ int pool_thread__send_shm(pool_thread *pool, char *shm_name, int fd,
 }
 
 int pool_thread__create_thread(pool_thread *pool, size_t i) {
-  if (sem_init(&pool->sem_thread_work[i], 0, 0) == -1) {
+  if (sem_init(&pool->sem_thread_work[i], 0, THREAD_INIT) == -1) {
     PRINT_ERR("%s : %s", "sem_init", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
@@ -385,8 +412,17 @@ int pool_thread__create_thread(pool_thread *pool, size_t i) {
     return POOL_THREAD_FAILURE;
   }
 
+  thread_arg *arg = malloc(sizeof(thread_arg));
+  arg->sem_thread_work = &pool->sem_thread_work[i];
+  arg->sem_mutex_nb = &sem_mutex_nb;
+  arg->sem_mutex_shm = &sem_mutex_shm;
+  arg->sem_thread_get = &sem_thread_get;
+  arg->sem_daemon_send = &sem_daemon_send;
+  arg->shm_name = global_shm_name;
+  arg->shm_fd = &global_shm_fd;
+
   int err = pthread_create(pool->threads[i], NULL, pool_thread__run,
-        &pool->sem_thread_work[i]);
+        arg);
 
   if (err != 0) {
     PRINT_ERR("%s : %s", "pthread_create", strerror(err));
