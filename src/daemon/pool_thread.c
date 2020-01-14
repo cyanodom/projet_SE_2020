@@ -13,6 +13,13 @@
 #include "macros.h"
 #include "pool_thread.h"
 
+#define STR_PREFIX_THREAD " + "
+#define STR_THREAD_WORK STR_PREFIX_THREAD "Un thread travaille"
+#define STR_THREAD_WAIT STR_PREFIX_THREAD "Un thread attends du travail"
+#define STR_THREAD_DONE STR_PREFIX_THREAD "Un thread a fini son travail"
+#define STR_THREAD_DEAD STR_PREFIX_THREAD "Un thread s'est détruit"
+
+
 #define FD_KILL -1
 #define BASE_SHM_NAME "shm_thread_"
 
@@ -265,6 +272,7 @@ void *pool_thread__run(void *param) {
   }
   do {
     //wait to work
+    PRINT_INFO("%s", STR_THREAD_WAIT);
     if (sem_wait(sem_work) == -1) {
       PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
       exit(EXIT_FAILURE);
@@ -288,8 +296,11 @@ void *pool_thread__run(void *param) {
       exit(EXIT_FAILURE);
     }
     if (shm_fd != FD_KILL) {
+      PRINT_INFO("%s", STR_THREAD_WORK);
       //TODO fork + shm
-      printf("I work\n");
+      sleep(3);
+
+      PRINT_INFO("%s", STR_THREAD_DONE);
       //finish work by closing shm
       if (shm_unlink(shm_name) != 0) {
         PRINT_ERR("%s : %s", "shm_unlink", strerror(errno));
@@ -323,6 +334,7 @@ void *pool_thread__run(void *param) {
   }
   sem_destroy(sem_work);
   sem_work = NULL;
+  PRINT_INFO("%s", STR_THREAD_DEAD);
   pthread_exit(NULL);
 }
 
