@@ -23,8 +23,6 @@
 #define FUN_SUCCESS 0
 #define FUN_FAILURE -1
 
-extern shared_memory **shm_obj;
-
 bool exists(char * pipe_name);
 int find_pipe_name(char *pipe_name);
 int generate_pipe_name(char *pipe_name, size_t id);
@@ -78,6 +76,7 @@ int main(void) {
     PRINT_ERR("%s : %s", "write", strerror(errno));
     return EXIT_FAILURE;
   }
+
   //read in the client pipe
   char shm_name[WORD_LEN_MAX];
   size_t length = 0;
@@ -89,23 +88,33 @@ int main(void) {
     }
     shm_name[length] = c;
     ++length;
-  } while (c != '\0' && length < WORD_LEN_MAX);
+  } while (c != 0 && length < WORD_LEN_MAX);
   printf("%s\n", shm_name);
+
   int shm_fd = shm_open(shm_name, O_RDWR, S_IRUSR | S_IWUSR);
+  if (shm_fd == -1) {
+    PRINT_ERR("%s : %s", "shm_open", strerror(errno));
+    return EXIT_FAILURE;
+  }
+
+  if (shm_unlink(shm_name) != 0) {
+    PRINT_ERR("%s : %s", "shm_unlink", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
 
   //fully connected________________________________
 
   size_t real_shm_size = (size_t) (shm_size + SHM_HEADER);
 
-  if (ftruncate(own_fd, (__off_t) real_shm_size) != 0) {
-    PRINT_ERR("%s : %s", "ftruncate", strerror(errno));
-    return EXIT_FAILURE;
-  }
-
   char *shm_ptr = mmap(NULL, real_shm_size, PROT_READ | PROT_WRITE,
       MAP_SHARED, shm_fd, 0);
   if (shm_ptr == MAP_FAILED) {
     PRINT_ERR("%s : %s", "mmap", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
+
+  if (close(shm_fd) != 0) {
+    PRINT_ERR("%s : %s", "close", strerror(errno));
     exit(EXIT_FAILURE);
   }
 
@@ -118,23 +127,11 @@ int main(void) {
     return EXIT_FAILURE;
   }
 
+  printf("client send\n");
+
   if (sem_wait(&shm_obj->thread_send) != 0) {
     PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
     return EXIT_FAILURE;
-  }
-
-  printf("%s\n", shm_obj->data);
-
-  if (shm_unlink(shm_name) != 0) {
-    PRINT_ERR("%s : %s", "shm_unlink", strerror(errno));
-    exit(EXIT_FAILURE);
-  }
-
-
-
-  if (close(shm_fd) != 0) {
-    PRINT_ERR("%s : %s", "close", strerror(errno));
-    exit(EXIT_FAILURE);
   }
 
   return EXIT_SUCCESS;
@@ -154,7 +151,7 @@ int find_pipe_name(char *client_pipe) {
   do {
     int generate_pipe_name_r = generate_pipe_name(client_pipe, i);
     if (generate_pipe_name_r != FUN_SUCCESS) {
-      printf("%d", generate_pipe_name_r);
+      PRINT_ERR("%s : %d", "generate_pipe_name", generate_pipe_name_r);
       return FUN_FAILURE;
     }
     ++i;
@@ -165,6 +162,7 @@ int find_pipe_name(char *client_pipe) {
     PRINT_ERR("%s : %s", "mkfifo", strerror(errno));
     return FUN_FAILURE;
   }
+
   return FUN_SUCCESS;
 }
 

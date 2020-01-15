@@ -25,13 +25,14 @@
 #define STR_THREAD_SHOULD_WORK "Une requête a été envoyée à un thread"
 #define STR_THREAD_DELETED "Un thread a été libéré"
 #define STR_THREAD_CREATED "Un thread a été créé"
-#define STR_NO_ENOUGHT_SPACE_SHM "L'espace de mémoire partagée ne possède pas \
-    suffisement de mémoire"
+#define STR_NO_ENOUGHT_SPACE_SHM "L'espace de mémoire partagée ne possède pas "\
+    "suffisement de mémoire"
+#define STR_NAME_COMMAND_IS "Le nom de la commande est"
 
 #define FD_KILL -1
 #define BASE_SHM_NAME "shm_thread_"
 
-extern shared_memory **shm_obj;
+shared_memory **shm_obj = NULL;
 
 //Everytime global_nb_threads is very near the real number of threads
 
@@ -77,11 +78,13 @@ static int pool_thread__where_can_create_thread(pool_thread *pool,
 //crée un pool de threads avec les paramètres spécifiés
 int pool_thread_init(pool_thread **pool_ret, size_t min_thread_nb,
     size_t max_thread_nb, size_t max_connect_per_thread, size_t shm_size) {
-  shm_obj = malloc((sizeof(shared_memory) + SHM_HEADER) * max_thread_nb);
+
+  shm_obj = malloc(sizeof(shared_memory *) * max_thread_nb);
   if (shm_obj == NULL) {
     PRINT_ERR("%s : %s", "malloc", strerror(errno));
     return POOL_THREAD_FAILURE;
   }
+
   //create pool and threads
   pool_thread *pool = malloc(sizeof(pool_thread));
   if (pool_ret == NULL) {
@@ -180,12 +183,13 @@ int pool_thread_dispose(pool_thread **pool) {
       PRINT_INFO("%s", STR_THREAD_DELETED);
     }
   }
+  free(shm_obj);
+
   free((*pool)->threads);
   free((*pool)->threads_work);
   free((*pool)->threads_need_to_work);
   free((*pool)->threads_need_join);
   free((*pool)->threads_can_create);
-  free(shm_obj);
   free(*pool);
   *pool = NULL;
   return POOL_THREAD_SUCCESS;
@@ -311,7 +315,6 @@ int pool_thread_manage(pool_thread *pool) {
 //fonction des threads
 void *pool_thread__run(void *param) {
   thread_arg *arg = (thread_arg *) param;
-  char shm_name[WORD_LEN_MAX];
   int shm_fd;
   size_t remaining_work_plus_one = arg->max_connect
     + (arg->max_connect == 0 ? 1 : 0);
@@ -323,14 +326,6 @@ void *pool_thread__run(void *param) {
       exit(EXIT_FAILURE);
     }
     // now I work, get the shm
-    size_t index_str = 0;
-    if (arg->critical_shm_name[0] != 0) {
-      do {
-        shm_name[index_str] = arg->critical_shm_name[index_str];
-        ++index_str;
-      } while (arg->critical_shm_name[index_str] != 0);
-    }
-    shm_name[index_str] = 0;
     shm_fd = *arg->critical_shm_fd;
     //say to others I'm working
     if (sem_post(arg->thread_work) == -1) {
@@ -341,16 +336,6 @@ void *pool_thread__run(void *param) {
 
       PRINT_INFO("%s", STR_THREAD_WORK);
 
-      size_t real_shm_size = (arg->shm_size + SHM_HEADER);
-
-      char *shm_ptr = mmap(NULL, real_shm_size, PROT_READ | PROT_WRITE,
-          MAP_SHARED, shm_fd, 0);
-      if (shm_ptr == MAP_FAILED) {
-        PRINT_ERR("%s : %s", "mmap", strerror(errno));
-        exit(EXIT_FAILURE);
-      }
-
-      shm_obj[arg->thread_id] = (shared_memory *) shm_ptr;
       shared_memory *my_shm = shm_obj[arg->thread_id];
 
       int pipe_fd[2];
@@ -369,6 +354,26 @@ void *pool_thread__run(void *param) {
         exit(EXIT_FAILURE);
       case 0:
         //fils
+
+        //wait for the client to send exec name
+        if (sem_wait(&my_shm->client_send) != 0) {
+          PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+          exit(EXIT_FAILURE);
+        }
+
+        char *args[2];
+        char exec_name[WORD_LEN_MAX];
+
+        size_t index_str = 0;
+        do {
+          exec_name[index_str] = my_shm->data[index_str];
+          ++index_str;
+        } while (my_shm->data[index_str] != 0);
+        exec_name[index_str] = 0;
+        args[0] = exec_name;
+        args[1] = NULL;
+        PRINT_INFO("%s : %s", STR_NAME_COMMAND_IS, exec_name);
+
         if (close(pipe_fd[0]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
           exit(EXIT_FAILURE);
@@ -377,15 +382,16 @@ void *pool_thread__run(void *param) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
           exit(EXIT_FAILURE);
         }
-        dup2(STDOUT_FILENO, pipe_fd[1]);
+        if (dup2(pipe_fd[1], STDOUT_FILENO) == -1) {
+          PRINT_ERR("%s : %s", "dup2", strerror(errno));
+          exit(EXIT_FAILURE);
+        }
         if (close(pipe_fd[1]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
           exit(EXIT_FAILURE);
         }
-        //exec
-        char *args[1];
-        args[0] = my_shm->data;
-        execvp(my_shm->data, args);
+
+        execvp(exec_name, args);
         PRINT_ERR("%s : %s", "execvp", strerror(errno));
         exit(EXIT_FAILURE);
       default:
@@ -396,13 +402,21 @@ void *pool_thread__run(void *param) {
         }
         //read output of exec process
         size_t i = 0;
-        while (read(pipe_fd[0], &my_shm->data[i], sizeof(char)) > 0) {
-          if (i < arg->shm_size) {
-            ++i;
-          } else {
+        char c;
+        while (read(pipe_fd[0], &c, sizeof(char)) > 0) {
+          if (!(i < arg->shm_size - 1)) {
             PRINT_ERR("%s", STR_NO_ENOUGHT_SPACE_SHM);
             exit(EXIT_FAILURE);
           }
+          my_shm->data[i] = c;
+          ++i;
+        }
+        my_shm->data[i] = 0;
+
+        //and send client the output is available
+        if (sem_post(&my_shm->thread_send) != 0) {
+          PRINT_ERR("%s : %s", "sem_post", strerror(errno));
+          exit(EXIT_FAILURE);
         }
         if (close(pipe_fd[0]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
@@ -410,13 +424,8 @@ void *pool_thread__run(void *param) {
         }
         //wait the program
         int status;
-        if (waitpid(r, &status, 0) != 0) {
+        if (waitpid(r, &status, 0) == -1) {
           PRINT_ERR("%s : %s", "wait", strerror(errno));
-          exit(EXIT_FAILURE);
-        }
-        //and send client the output is available
-        if (sem_post(&my_shm->thread_send) != 0) {
-          PRINT_ERR("%s : %s", "sem_post", strerror(errno));
           exit(EXIT_FAILURE);
         }
         if (WIFEXITED(status)) {
@@ -427,11 +436,7 @@ void *pool_thread__run(void *param) {
       //___________work___________
 
       PRINT_INFO("%s", STR_THREAD_DONE);
-      //finish work by closing shm and saying others I'm free
-      if (shm_unlink(shm_name) != 0) {
-        PRINT_ERR("%s : %s", "shm_unlink", strerror(errno));
-        exit(EXIT_FAILURE);
-      }
+      //finish work by closing shm and saying others I'm free (TODO only if END)
       if (close(shm_fd) != 0) {
         PRINT_ERR("%s : %s", "close", strerror(errno));
         exit(EXIT_FAILURE);
@@ -604,17 +609,21 @@ int pool_thread__shm_name_open(pool_thread *pool, size_t id, char *name,
     exit(POOL_THREAD_FAILURE);
   }
 
+  char *shm_ptr = mmap(NULL, real_shm_size, PROT_READ | PROT_WRITE,
+      MAP_SHARED, *shm_fd, 0);
+  if (shm_ptr == MAP_FAILED) {
+    PRINT_ERR("%s : %s", "mmap", strerror(errno));
+    exit(EXIT_FAILURE);
+  }
+
+  shm_obj[id] = (shared_memory *)shm_ptr;
+
   if (sem_init(&shm_obj[id]->thread_send, 1, 0) != 0) {
     PRINT_ERR("%s : %s", "sem_init", strerror(errno));
     exit(EXIT_FAILURE);
   }
   if (sem_init(&shm_obj[id]->client_send, 1, 0) != 0) {
     PRINT_ERR("%s : %s", "sem_init", strerror(errno));
-    exit(EXIT_FAILURE);
-  }
-
-  if (sem_wait(&shm_obj[id]->client_send) != 0) {
-    PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
     exit(EXIT_FAILURE);
   }
   return POOL_THREAD_SUCCESS;

@@ -73,7 +73,7 @@ int main(void) {
   PRINT_INFO(STR_MAX_CONNECT_PER_THREAD " = %zu", max_connect_per_thread)
   PRINT_INFO(STR_SHM_SIZE " = %zu", shm_size);
 
-  //create the thread pool
+  //create the thread pool and shm
   PRINT_INFO("%s", STR_CREATE_POOL_THREAD);
   int pool_thread_init_r = pool_thread_init(&pool, min_thread_nb,
       max_thread_nb, max_connect_per_thread, shm_size);
@@ -146,6 +146,7 @@ int main(void) {
       PRINT_ERR("%s : %s", "open", strerror(errno));
       goto error;
     }
+    
     //send the message
     if (write(client_pipe_fd, shm_name, strlen(shm_name) + 1) == -1) {
       PRINT_ERR("%s : %s", "write", strerror(errno));
