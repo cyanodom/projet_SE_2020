@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <signal.h>
 #include <errno.h>
 #include <stdbool.h>
 
@@ -27,6 +28,9 @@ static bool exists(char * pipe_name);
 static int find_pipe_name(char *pipe_name);
 static int generate_pipe_name(char *pipe_name, size_t id);
 static int read_command(char *, size_t);
+static void monitor_signal(int signum);
+
+bool should_be_killed = false;
 
 int main(void) {
   size_t shm_size;
@@ -37,6 +41,21 @@ int main(void) {
     PRINT_ERR("%s : %d", "load_conf_file", load_conf_ret);
     return EXIT_FAILURE;
   }
+
+  //set the default actions on SIGINT signal
+  struct sigaction action;
+  action.sa_handler = monitor_signal;
+  action.sa_flags = 0;
+  if (sigfillset(&action.sa_mask) == -1) {
+    perror("sigfillset");
+    exit(EXIT_FAILURE);
+  }
+
+  if (sigaction(SIGINT, &action, NULL) == -1) {
+    perror("sigaction");
+    exit(EXIT_FAILURE);
+  }
+
   //find the name of the client pipe
   char client_pipe[WORD_LEN_MAX + 1];
   if (find_pipe_name(client_pipe) != FUN_SUCCESS) {
@@ -110,9 +129,11 @@ int main(void) {
   shared_memory *shm_obj = (shared_memory *) shm_ptr;
 
   char *command = malloc(sizeof(char) * shm_size);
+  command[0] = ' ';
+  command[1] = 0;
   bool first = true;
 
-  while (read_command(command, shm_size) == 0) {
+  while (read_command(command, shm_size) == 0 && !should_be_killed) {
     if (first) {
       first = false;
     } else {
@@ -144,7 +165,9 @@ int main(void) {
     printf("%s\n", shm_obj->data);
   }
 
-  strcpy(shm_obj->data, END);
+  if (!first) {
+    strcpy(shm_obj->data, END);
+  }
 
   if (sem_post(&shm_obj->client_send) != 0) {
     PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
@@ -239,4 +262,12 @@ bool exists(char * pipe_name) {
   //I dont think it is the best way to do but I dont have found any other idea
   struct stat stats;
   return (stat(pipe_name, &stats) == 0);
+}
+
+void monitor_signal(int signum) {
+  if (signum < 0) {
+    PRINT_ERR("%s : %d", "signal error", signum);
+    exit(EXIT_FAILURE);
+  }
+  should_be_killed = true;
 }

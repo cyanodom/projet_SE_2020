@@ -374,6 +374,7 @@ char *pool_thread_strerror(int errnum) {
 //__________________________THREAD_CODE____________________________
 //fonction des threads
 void *pool_thread__run(void *param) {
+  void *ret = NULL;
   thread_arg *arg = (thread_arg *) param;
   int shm_fd;
   size_t remaining_work_plus_one = arg->max_connect
@@ -385,14 +386,16 @@ void *pool_thread__run(void *param) {
       PRINT_INFO("%s", STR_THREAD_WAIT);
       if (sem_wait(arg->thread_need_to_work) == -1) {
         PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-        pthread_exit(PTHREAD_CANCELED);
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
       }
       // now I work, get the shm
       shm_fd = *arg->critical_shm_fd;
       //say to others I'm working
       if (sem_post(arg->thread_work) == -1) {
         PRINT_ERR("%s : %s", "sem_post", strerror(errno));
-        pthread_exit(PTHREAD_CANCELED);
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
       }
     }
     if (shm_fd != FD_KILL) {
@@ -402,7 +405,8 @@ void *pool_thread__run(void *param) {
       int pipe_fd[2];
       if (pipe(pipe_fd) != 0) {
         PRINT_ERR("%s : %s", "pipe", strerror(errno));
-        pthread_exit(PTHREAD_CANCELED);
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
       }
       PRINT_MSG("%s", STR_COMMAND_LAUNCHED);
 
@@ -410,14 +414,16 @@ void *pool_thread__run(void *param) {
       int r = fork();
       if (r == -1) {
         PRINT_ERR("%s : %s", "fork", strerror(errno));
-        exit(EXIT_FAILURE);
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
       } else if (r == 0) {
         //fils
 
         //wait for the client to send exec name
         if (sem_wait(&(*arg->shm_obj)->client_send) != 0) {
           PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-          exit(EXIT_FAILURE);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
 
         char word[WORD_LEN_MAX];
@@ -448,7 +454,8 @@ void *pool_thread__run(void *param) {
               args[index_arg] = malloc(sizeof(char) * (strlen(word) + 1));
               if (args[index_arg] == NULL) {
                PRINT_ERR("%s : %s", "malloc", strerror(errno));
-               exit(EXIT_FAILURE);
+               ret = PTHREAD_CANCELED;
+               goto thread_die;
               }
               strcpy(args[index_arg], word);
               index_w = 0;
@@ -463,28 +470,34 @@ void *pool_thread__run(void *param) {
 
         if (close(pipe_fd[0]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
-          exit(EXIT_FAILURE);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
         if (close(STDOUT_FILENO) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
-          exit(EXIT_FAILURE);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
         if (dup2(pipe_fd[1], STDOUT_FILENO) == -1) {
           PRINT_ERR("%s : %s", "dup2", strerror(errno));
-          exit(EXIT_FAILURE);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
         if (close(pipe_fd[1]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
-          exit(EXIT_FAILURE);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
 
         execvp(args[0], args);
-        exit(EXIT_FAILURE);
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
       } else {
         //père
         if (close(pipe_fd[1]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
         //read output of exec process
         size_t i = 0;
@@ -492,7 +505,8 @@ void *pool_thread__run(void *param) {
         while (read(pipe_fd[0], &c, sizeof(char)) > 0) {
           if (!(i < arg->shm_size - 1)) {
             PRINT_ERR("%s", STR_NO_ENOUGHT_SPACE_SHM);
-            pthread_exit(PTHREAD_CANCELED);
+            ret = PTHREAD_CANCELED;
+            goto thread_die;
           }
           (*arg->shm_obj)->data[i] = c;
           ++i;
@@ -502,17 +516,20 @@ void *pool_thread__run(void *param) {
         //and send client the output is available
         if (sem_post(&(*arg->shm_obj)->thread_send) != 0) {
           PRINT_ERR("%s : %s", "sem_post", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
         if (close(pipe_fd[0]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
         //wait the program
         int status;
         if (waitpid(r, &status, 0) == -1) {
           PRINT_ERR("%s : %s", "wait", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
         if (WIFEXITED(status)) {
           PRINT_MSG("%s : %d", STR_CHILD_PROCESS_RETURNED,
@@ -522,7 +539,8 @@ void *pool_thread__run(void *param) {
 
       if (sem_wait(&(*arg->shm_obj)->client_send) != 0) {
         PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-        exit(EXIT_FAILURE);
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
       }
 
       if (strcmp((*arg->shm_obj)->data, END) == 0) {
@@ -531,11 +549,13 @@ void *pool_thread__run(void *param) {
         continue_same_client = true;
         if (sem_post(&(*arg->shm_obj)->new_command_ready) != 0) {
           PRINT_ERR("%s : %s", "sem_post", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
         }
       } else {
         PRINT_ERR("%s", STR_UNKNOW_COMMAND);
-        pthread_exit(PTHREAD_CANCELED);
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
       }
     }
     if (!continue_same_client) {
@@ -543,14 +563,15 @@ void *pool_thread__run(void *param) {
       //finish work and saying others I'm free
       if (sem_wait(arg->thread_work) == -1) {
         PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-        pthread_exit(PTHREAD_CANCELED);
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
       }
     }
     if (remaining_work_plus_one != 0) {
            --remaining_work_plus_one;
     }
   } while (shm_fd != FD_KILL && remaining_work_plus_one != 1);
-
+thread_die:
   //thread need to die
   //say to others I need join
   if (sem_post(arg->thread_need_join) == -1) {
@@ -559,7 +580,7 @@ void *pool_thread__run(void *param) {
   }
   free(arg);
   PRINT_INFO("%s", STR_THREAD_DEAD);
-  pthread_exit(NULL);
+  pthread_exit(ret);
 }
 
 //__________________________POOL_THREAD_TOOLS______________________
