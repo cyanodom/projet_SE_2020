@@ -9,6 +9,7 @@
   typedef struct shared_memory {
     sem_t thread_send;
     sem_t client_send;
+    sem_t new_command_ready;
     char data[];
   } shared_memory;
 

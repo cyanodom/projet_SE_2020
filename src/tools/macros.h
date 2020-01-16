@@ -33,4 +33,5 @@
   #define SYNC "SYNC"
   #define RST "RST"
   #define END "END"
+  #define NEW "NEW"
 #endif

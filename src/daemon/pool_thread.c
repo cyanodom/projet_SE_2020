@@ -32,6 +32,7 @@
 #define STR_NO_ENOUGHT_SPACE_SHM "L'espace de mémoire partagée ne possède pas "\
     "suffisement de mémoire"
 #define STR_NAME_COMMAND_IS "Le nom de la commande est"
+#define STR_UNKNOW_COMMAND "Une commande inconnue a été envoyée"
 
 
 #define STR_POOL_THREAD_SUCCESS "Tout s'est bien passé"
@@ -377,19 +378,22 @@ void *pool_thread__run(void *param) {
   int shm_fd;
   size_t remaining_work_plus_one = arg->max_connect
     + (arg->max_connect == 0 ? 1 : 0);
+  bool continue_same_client = false;
   do {
   //wait to need to work
-    PRINT_INFO("%s", STR_THREAD_WAIT);
-    if (sem_wait(arg->thread_need_to_work) == -1) {
-      PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-      pthread_exit(PTHREAD_CANCELED);
-    }
-    // now I work, get the shm
-    shm_fd = *arg->critical_shm_fd;
-    //say to others I'm working
-    if (sem_post(arg->thread_work) == -1) {
-      PRINT_ERR("%s : %s", "sem_post", strerror(errno));
-      pthread_exit(PTHREAD_CANCELED);
+    if (!continue_same_client) {
+      PRINT_INFO("%s", STR_THREAD_WAIT);
+      if (sem_wait(arg->thread_need_to_work) == -1) {
+        PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+        pthread_exit(PTHREAD_CANCELED);
+      }
+      // now I work, get the shm
+      shm_fd = *arg->critical_shm_fd;
+      //say to others I'm working
+      if (sem_post(arg->thread_work) == -1) {
+        PRINT_ERR("%s : %s", "sem_post", strerror(errno));
+        pthread_exit(PTHREAD_CANCELED);
+      }
     }
     if (shm_fd != FD_KILL) {
 
@@ -403,55 +407,80 @@ void *pool_thread__run(void *param) {
       PRINT_MSG("%s", STR_COMMAND_LAUNCHED);
 
       //___________work___________
-
       int r = fork();
-      switch(r) {
-      case -1:
+      if (r == -1) {
         PRINT_ERR("%s : %s", "fork", strerror(errno));
-        pthread_exit(PTHREAD_CANCELED);
-      case 0:
+        exit(EXIT_FAILURE);
+      } else if (r == 0) {
         //fils
 
         //wait for the client to send exec name
         if (sem_wait(&(*arg->shm_obj)->client_send) != 0) {
           PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          exit(EXIT_FAILURE);
         }
 
-        char *args[2];
-        char exec_name[WORD_LEN_MAX];
-
-        size_t index_str = 0;
+        char word[WORD_LEN_MAX];
+        size_t index_d = 0;
+        size_t index_arg = 0;
         do {
-          exec_name[index_str] = (*arg->shm_obj)->data[index_str];
-          ++index_str;
-        } while ((*arg->shm_obj)->data[index_str] != 0);
-        exec_name[index_str] = 0;
-        args[0] = exec_name;
-        args[1] = NULL;
-        PRINT_INFO("%s : %s", STR_NAME_COMMAND_IS, exec_name);
+          if ((*arg->shm_obj)->data[index_d] != ' ') {
+            if ((*arg->shm_obj)->data[index_d + 1] == 0
+                || (*arg->shm_obj)->data[index_d + 1] == ' ') {
+              ++index_arg;
+            }
+          }
+          ++index_d;
+        } while ((*arg->shm_obj)->data[index_d] != 0);
+
+        char **args = malloc(sizeof(char *) * (index_arg + 2));
+        index_arg = 0;
+        index_d = 0;
+        size_t index_w = 0;
+
+        do {
+          if ((*arg->shm_obj)->data[index_d] != ' ') {
+            word[index_w] = (*arg->shm_obj)->data[index_d];
+            ++index_w;
+            if ((*arg->shm_obj)->data[index_d + 1] == 0
+                || (*arg->shm_obj)->data[index_d + 1] == ' ') {
+              word[index_w] = 0;
+              args[index_arg] = malloc(sizeof(char) * (strlen(word) + 1));
+              if (args[index_arg] == NULL) {
+               PRINT_ERR("%s : %s", "malloc", strerror(errno));
+               exit(EXIT_FAILURE);
+              }
+              strcpy(args[index_arg], word);
+              index_w = 0;
+              ++index_arg;
+              args[index_arg] = NULL;
+            }
+          }
+          ++index_d;
+        } while ((*arg->shm_obj)->data[index_d] != 0);
+
+        PRINT_INFO("%s : %s", STR_NAME_COMMAND_IS, (*arg->shm_obj)->data);
 
         if (close(pipe_fd[0]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          exit(EXIT_FAILURE);
         }
         if (close(STDOUT_FILENO) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          exit(EXIT_FAILURE);
         }
         if (dup2(pipe_fd[1], STDOUT_FILENO) == -1) {
           PRINT_ERR("%s : %s", "dup2", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          exit(EXIT_FAILURE);
         }
         if (close(pipe_fd[1]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
-          pthread_exit(PTHREAD_CANCELED);
+          exit(EXIT_FAILURE);
         }
 
-        execvp(exec_name, args);
-        PRINT_ERR("%s : %s", "execvp", strerror(errno));
-        pthread_exit(PTHREAD_CANCELED);
-      default:
+        execvp(args[0], args);
+        exit(EXIT_FAILURE);
+      } else {
         //père
         if (close(pipe_fd[1]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
@@ -486,18 +515,32 @@ void *pool_thread__run(void *param) {
           pthread_exit(PTHREAD_CANCELED);
         }
         if (WIFEXITED(status)) {
-          PRINT_MSG("%s : %d", STR_CHILD_PROCESS_RETURNED, WEXITSTATUS(status));
+          PRINT_MSG("%s : %d", STR_CHILD_PROCESS_RETURNED,
+              WEXITSTATUS(status));
         }
       }
 
-      //___________work___________
+      if (sem_wait(&(*arg->shm_obj)->client_send) != 0) {
+        PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+        exit(EXIT_FAILURE);
+      }
 
-      PRINT_INFO("%s", STR_THREAD_DONE);
-      //finish work by closing shm and saying others I'm free
-      if (close(shm_fd) != 0) {
-        PRINT_ERR("%s : %s", "close", strerror(errno));
+      if (strcmp((*arg->shm_obj)->data, END) == 0) {
+        continue_same_client = false;
+      } else if (strcmp((*arg->shm_obj)->data, NEW) == 0) {
+        continue_same_client = true;
+        if (sem_post(&(*arg->shm_obj)->new_command_ready) != 0) {
+          PRINT_ERR("%s : %s", "sem_post", strerror(errno));
+          pthread_exit(PTHREAD_CANCELED);
+        }
+      } else {
+        PRINT_ERR("%s", STR_UNKNOW_COMMAND);
         pthread_exit(PTHREAD_CANCELED);
       }
+    }
+    if (!continue_same_client) {
+      PRINT_INFO("%s", STR_THREAD_DONE);
+      //finish work and saying others I'm free
       if (sem_wait(arg->thread_work) == -1) {
         PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
         pthread_exit(PTHREAD_CANCELED);
@@ -659,6 +702,10 @@ int pool_thread__shm_name_open(pool_thread *pool, size_t id, char *name,
   pool->shm_obj[id] = (shared_memory *)shm_ptr;
 
   if (sem_init(&pool->shm_obj[id]->thread_send, 1, 0) != 0) {
+    PRINT_ERR("%s : %s", "sem_init", strerror(errno));
+    return POOL_THREAD_BAD_ALLOC;
+  }
+  if (sem_init(&pool->shm_obj[id]->new_command_ready, 1, 1) != 0) {
     PRINT_ERR("%s : %s", "sem_init", strerror(errno));
     return POOL_THREAD_BAD_ALLOC;
   }

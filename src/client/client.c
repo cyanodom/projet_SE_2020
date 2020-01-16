@@ -15,7 +15,7 @@
 
 #define STR_THE_PIPE "le pipe"
 #define STR_WILL_BE_USED "sera uttilisé"
-#define STR_CONNECTED "connecté au serveur\n"
+#define STR_CONNECTED "connecté au serveur"
 
 #define CLIENT_PIPE_BASE_NAME "client_pipe"
 
@@ -23,9 +23,10 @@
 #define FUN_SUCCESS 0
 #define FUN_FAILURE -1
 
-bool exists(char * pipe_name);
-int find_pipe_name(char *pipe_name);
-int generate_pipe_name(char *pipe_name, size_t id);
+static bool exists(char * pipe_name);
+static int find_pipe_name(char *pipe_name);
+static int generate_pipe_name(char *pipe_name, size_t id);
+static int read_command(char *, size_t);
 
 int main(void) {
   size_t shm_size;
@@ -88,17 +89,11 @@ int main(void) {
     shm_name[length] = c;
     ++length;
   } while (c != 0 && length < WORD_LEN_MAX);
-  printf("%s\n", shm_name);
 
   int shm_fd = shm_open(shm_name, O_RDWR, S_IRUSR | S_IWUSR);
   if (shm_fd == -1) {
     PRINT_ERR("%s : %s", "shm_open", strerror(errno));
     return EXIT_FAILURE;
-  }
-
-  if (shm_unlink(shm_name) != 0) {
-    PRINT_ERR("%s : %s", "shm_unlink", strerror(errno));
-    exit(EXIT_FAILURE);
   }
 
   //fully connected________________________________
@@ -112,30 +107,74 @@ int main(void) {
     exit(EXIT_FAILURE);
   }
 
-  if (close(shm_fd) != 0) {
-    PRINT_ERR("%s : %s", "close", strerror(errno));
-    exit(EXIT_FAILURE);
-  }
-
   shared_memory *shm_obj = (shared_memory *) shm_ptr;
 
-  strcpy(shm_obj->data, "ls");
+  char *command = malloc(sizeof(char) * shm_size);
+  bool first = true;
 
-  if (sem_post(&shm_obj->client_send) != 0) {
-    PRINT_ERR("%s : %s", "sem_post", strerror(errno));
-    return EXIT_FAILURE;
+  while (read_command(command, shm_size) == 0) {
+    if (first) {
+      first = false;
+    } else {
+      strcpy(shm_obj->data, NEW);
+
+      if (sem_post(&shm_obj->client_send) != 0) {
+        PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+        return EXIT_FAILURE;
+      }
+    }
+
+    if (sem_wait(&shm_obj->new_command_ready) != 0) {
+      PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+      return EXIT_FAILURE;
+    }
+
+    strcpy(shm_obj->data, command);
+
+    if (sem_post(&shm_obj->client_send) != 0) {
+      PRINT_ERR("%s : %s", "sem_post", strerror(errno));
+      return EXIT_FAILURE;
+    }
+
+    if (sem_wait(&shm_obj->thread_send) != 0) {
+      PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+      return EXIT_FAILURE;
+    }
+
+    printf("%s\n", shm_obj->data);
   }
 
-  printf("client send\n");
+  strcpy(shm_obj->data, END);
 
-  if (sem_wait(&shm_obj->thread_send) != 0) {
+  if (sem_post(&shm_obj->client_send) != 0) {
     PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
     return EXIT_FAILURE;
   }
 
-  printf("%s\n", shm_obj->data);
+  free(command);
 
+  close(own_fd);
+  unlink(client_pipe);
   return EXIT_SUCCESS;
+}
+
+
+int read_command(char * command, size_t shm_size) {
+  int c;
+  char *word = malloc(sizeof(char) * shm_size);
+  size_t i = 0;
+  while ((c = fgetc(stdin)) != EOF) {
+    if (c == '\n') {
+      word[i] = 0;
+      strcpy(command, word);
+      free(word);
+      return 0;
+    } else {
+      word[i] = (char)c;
+      i ++;
+    }
+  }
+  return 1;
 }
 
 int find_pipe_name(char *client_pipe) {
