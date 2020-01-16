@@ -91,11 +91,6 @@ int main(void) {
     return EXIT_FAILURE;
   }
 
-  if (write(STDOUT_FILENO, STR_CONNECTED, strlen(STR_CONNECTED)) == -1) {
-    PRINT_ERR("%s : %s", "write", strerror(errno));
-    return EXIT_FAILURE;
-  }
-
   //read in the client pipe
   char shm_name[WORD_LEN_MAX];
   size_t length = 0;
@@ -183,6 +178,8 @@ int main(void) {
 
 
 int read_command(char * command, size_t shm_size) {
+  fputc('>', stdout);
+  fputc(' ', stdout);
   int c;
   char *word = malloc(sizeof(char) * shm_size);
   size_t i = 0;

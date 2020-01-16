@@ -572,6 +572,13 @@ void *pool_thread__run(void *param) {
     }
   } while (shm_fd != FD_KILL && remaining_work_plus_one != 1);
 thread_die:
+  if (continue_same_client) {
+    if (sem_wait(arg->thread_work) == -1) {
+      PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+      ret = PTHREAD_CANCELED;
+      goto thread_die;
+    }
+  }
   //thread need to die
   //say to others I need join
   if (sem_post(arg->thread_need_join) == -1) {
