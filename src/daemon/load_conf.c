@@ -73,7 +73,7 @@ int load_conf_file(size_t *max_thread_nb, size_t *min_thread_nb,
   if (min_thread_nb != NULL && max_thread_nb != NULL) {
     if (*min_thread_nb > *max_thread_nb) {
       PRINT_ERR("%s : %s", "load_conf_file",
-          STR_MIN_THREAD " " STR_CANNOT_BE_GREATER_THAN " " STR_MAX_THREAD);
+          "STR_MIN_THREAD "  STR_CANNOT_BE_GREATER_THAN " STR_MAX_THREAD");
       return LOAD_CONF_FAILURE;
     }
   }

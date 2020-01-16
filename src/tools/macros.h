@@ -30,5 +30,7 @@
 
   #define WORD_LEN_MAX 63
   #define BASE_PIPE_NAME "daemon_pipe"
-  #define SYNC 10
+  #define SYNC "SYNC"
+  #define RST "RST"
+  #define END "END"
 #endif

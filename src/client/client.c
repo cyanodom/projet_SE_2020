@@ -51,8 +51,7 @@ int main(void) {
   }
 
   //send to the daemon the SYNC command
-  size_t message = SYNC;
-  if (write(daemon_fd, &message, sizeof(size_t)) == -1) {
+  if (write(daemon_fd, SYNC, strlen(SYNC) + 1) == -1) {
     PRINT_ERR("%s : %s", "write", strerror(errno));
     return EXIT_FAILURE;
   }
@@ -133,6 +132,8 @@ int main(void) {
     PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
     return EXIT_FAILURE;
   }
+
+  printf("%s\n", shm_obj->data);
 
   return EXIT_SUCCESS;
 }

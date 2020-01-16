@@ -17,13 +17,22 @@ int pipe_create_base() {
 }
 
 int pipe_read(int fd, char *pipe_name) {//TODO read by buffer
-  size_t message;
-  if (read(fd, &message, sizeof(size_t)) == -1) {
+  char message[WORD_LEN_MAX];
+  size_t i = 0;
+  ssize_t err;
+  while ((err = read(fd, &message[i], sizeof(char))) > 0) {
+    if (message[i] == 0) {
+      break;
+    }
+    ++i;
+  }
+  if (err == -1) {
     PRINT_ERR("%s : %s", "read", strerror(errno));
     return PIPE_FAILURE;
   }
-  if (message != SYNC) {
-    return PIPE_ERROR_CLIENT;
+
+  if (strcmp(SYNC, message) != 0) {
+    return PIPE_FAILURE;
   }
 
   size_t length = 0;
