@@ -128,7 +128,10 @@ int main(void) {
   command[1] = 0;
   bool first = true;
 
-  while (read_command(command, shm_size) == 0 && !should_be_killed) {
+  if (read_command(command, shm_size) != 0) {
+    should_be_killed = true;
+  }
+  do {
     if (first) {
       first = false;
     } else {
@@ -157,12 +160,11 @@ int main(void) {
       return EXIT_FAILURE;
     }
 
-    printf("%s\n", shm_obj->data);
-  }
+    printf("%s", shm_obj->data);
 
-  if (!first) {
-    strcpy(shm_obj->data, END);
-  }
+  } while (!should_be_killed && read_command(command, shm_size) == 0);
+
+  strcpy(shm_obj->data, END);
 
   if (sem_post(&shm_obj->client_send) != 0) {
     PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
@@ -183,7 +185,7 @@ int read_command(char * command, size_t shm_size) {
   int c;
   char *word = malloc(sizeof(char) * shm_size);
   size_t i = 0;
-  while ((c = fgetc(stdin)) != EOF) {
+  while ((c = fgetc(stdin)) != EOF && c != -1) {
     if (c == '\n') {
       word[i] = 0;
       strcpy(command, word);

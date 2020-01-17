@@ -19,7 +19,8 @@
 #define STR_THREAD_WORK STR_PREFIX_THREAD "Un thread travaille"
 #define STR_THREAD_WAIT STR_PREFIX_THREAD "Un thread attends du travail"
 #define STR_THREAD_DONE STR_PREFIX_THREAD "Un thread a fini son travail"
-#define STR_CHILD_PROCESS_RETURNED "Un sous processus de thread a renvoyé"
+#define STR_CHILD_PROCESS_RETURNED STR_PREFIX_THREAD "Un sous processus de "   \
+    "thread a renvoyé"
 #define STR_THREAD_DEAD STR_PREFIX_THREAD "Un thread s'est détruit"
 #define STR_COMMAND_LAUNCHED STR_PREFIX_THREAD "Une commande a été lancée"
 #define STR_THREAD_PROBLEM "Un thread néttoyé s'est terminé avec un code "     \
@@ -31,12 +32,13 @@
 #define STR_THREAD_CREATED "Un thread a été créé"
 #define STR_NO_ENOUGHT_SPACE_SHM "L'espace de mémoire partagée ne possède pas "\
     "suffisement de mémoire"
-#define STR_NAME_COMMAND_IS "Le nom de la commande est"
-#define STR_UNKNOW_COMMAND "Une commande inconnue a été envoyée"
+#define STR_NAME_COMMAND_IS STR_PREFIX_THREAD "Le nom de la commande est"
+#define STR_UNKNOW_COMMAND STR_PREFIX_THREAD "Une commande inconnue a été "    \
+    "envoyée"
 
 
-#define STR_POOL_THREAD_SUCCESS "Tout s'est bien passé"
-#define STR_POOL_THREAD_FAILURE "Une erreur s'est produite"
+#define STR_POOL_THREAD_SUCCESS STR_PREFIX_THREAD "Tout s'est bien passé"
+#define STR_POOL_THREAD_FAILURE STR_PREFIX_THREAD "Une erreur s'est produite"
 #define STR_POOL_TRHEAD_NO_MORE_THREAD "Il n'y a plus de threads disponible"
 #define STR_POOL_THREAD_BAD_ALLOC "Une allocation ou initialisation a mal "    \
     "tourné"
@@ -45,10 +47,21 @@
 #define STR_POOL_THREAD_BAD_FAILURE "Une grave erreur s'est produite"
 #define STR_NO_CORRESPONDING_ERROR_CODE "Le code d'erreur ne correspond pas à "\
     "code d'erreur valable"
+#define STR_POOL_THREAD_CONNEXION_CLOSED STR_PREFIX_THREAD                     \
+    "Un client s'est déconnecté"
 
+
+#define STR_COMMAND_CD "cd"
+#define STR_COMMAND_INVALID_PARAMETER STR_PREFIX_THREAD "Les paramètre de "    \
+    "cette commandes sont invalides, veuillez corriger et recommencer"
+#define STR_COMMAND_SUCCESS "Succès"
+#define STR_COMMAND_FAILURE "Une erreur s'est produite essayez de changer les "\
+    "paramètres et recommencez"
 
 #define FD_KILL -1
 #define BASE_SHM_NAME "shm_thread_"
+
+extern char **environ;
 
 
 struct pool_thread {
@@ -377,6 +390,10 @@ void *pool_thread__run(void *param) {
   void *ret = NULL;
   thread_arg *arg = (thread_arg *) param;
   int shm_fd;
+
+  size_t index_arg = 0;
+  char **args = NULL;
+
   size_t remaining_work_plus_one = arg->max_connect
     + (arg->max_connect == 0 ? 1 : 0);
   bool continue_same_client = false;
@@ -408,54 +425,70 @@ void *pool_thread__run(void *param) {
         ret = PTHREAD_CANCELED;
         goto thread_die;
       }
+
+      //get the command name :
+      //wait for the client to send exec name
+      if (sem_wait(&(*arg->shm_obj)->client_send) != 0) {
+        PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+        ret = PTHREAD_CANCELED;
+        exit(EXIT_FAILURE);
+      }
       PRINT_MSG("%s", STR_COMMAND_LAUNCHED);
 
-      //___________work___________
-      int r = fork();
-      if (r == -1) {
-        PRINT_ERR("%s : %s", "fork", strerror(errno));
-        ret = PTHREAD_CANCELED;
-        goto thread_die;
-      } else if (r == 0) {
-        //fils
+      //gestion des arguments:
 
-        //wait for the client to send exec name
-        if (sem_wait(&(*arg->shm_obj)->client_send) != 0) {
-          PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-          ret = PTHREAD_CANCELED;
-          goto thread_die;
+      //libère les args:
+      for (size_t i = 0; i < index_arg; ++i) {
+        free(args[i]);
+      }
+      free(args);
+
+      char word[WORD_LEN_MAX];
+      size_t index_d = 0;
+      bool open_quotes = false;
+
+      index_arg = 0;
+      do {
+        if ((*arg->shm_obj)->data[index_d] == '"') {
+          open_quotes = !open_quotes;
         }
-
-        char word[WORD_LEN_MAX];
-        size_t index_d = 0;
-        size_t index_arg = 0;
-        do {
-          if ((*arg->shm_obj)->data[index_d] != ' ') {
-            if ((*arg->shm_obj)->data[index_d + 1] == 0
-                || (*arg->shm_obj)->data[index_d + 1] == ' ') {
-              ++index_arg;
-            }
+        if ((*arg->shm_obj)->data[index_d] != ' ' || open_quotes) {
+          if ((*arg->shm_obj)->data[index_d + 1] == 0
+              || ((*arg->shm_obj)->data[index_d + 1] == ' '
+                && !open_quotes)) {
+            ++index_arg;
           }
-          ++index_d;
-        } while ((*arg->shm_obj)->data[index_d] != 0);
+        }
+        ++index_d;
+      } while ((*arg->shm_obj)->data[index_d] != 0);
 
-        char **args = malloc(sizeof(char *) * (index_arg + 2));
+      if (index_arg > 0) {
+        //si au moins un argument est donné
+        args = malloc(sizeof(char *) * (index_arg + 2));
+
         index_arg = 0;
         index_d = 0;
         size_t index_w = 0;
+        open_quotes = false;
 
         do {
-          if ((*arg->shm_obj)->data[index_d] != ' ') {
-            word[index_w] = (*arg->shm_obj)->data[index_d];
-            ++index_w;
+          if ((*arg->shm_obj)->data[index_d] == '"') {
+            open_quotes = !open_quotes;
+          }
+          if ((*arg->shm_obj)->data[index_d] != ' ' || open_quotes) {
+            if ((*arg->shm_obj)->data[index_d] != '"') {
+              word[index_w] = (*arg->shm_obj)->data[index_d];
+              ++index_w;
+            }
             if ((*arg->shm_obj)->data[index_d + 1] == 0
-                || (*arg->shm_obj)->data[index_d + 1] == ' ') {
+                || ((*arg->shm_obj)->data[index_d + 1] == ' '
+                  && !open_quotes)) {
               word[index_w] = 0;
               args[index_arg] = malloc(sizeof(char) * (strlen(word) + 1));
               if (args[index_arg] == NULL) {
                PRINT_ERR("%s : %s", "malloc", strerror(errno));
                ret = PTHREAD_CANCELED;
-               goto thread_die;
+               exit(EXIT_FAILURE);
               }
               strcpy(args[index_arg], word);
               index_w = 0;
@@ -465,35 +498,64 @@ void *pool_thread__run(void *param) {
           }
           ++index_d;
         } while ((*arg->shm_obj)->data[index_d] != 0);
+      }
 
-        PRINT_INFO("%s : %s", STR_NAME_COMMAND_IS, (*arg->shm_obj)->data);
+      PRINT_INFO("%s : %s", STR_NAME_COMMAND_IS, (*arg->shm_obj)->data);
 
-        if (close(pipe_fd[0]) != 0) {
-          PRINT_ERR("%s : %s", "close", strerror(errno));
-          ret = PTHREAD_CANCELED;
-          goto thread_die;
+      //BUILT IN COMMANDS:
+      if (index_arg == 0) {
+        ;
+      } else if (strcmp(args[0], STR_COMMAND_CD) == 0) {
+        printf("cd");
+        if (index_arg == 2) {
+          if (chdir(args[1]) != 0) {
+            strcpy((*arg->shm_obj)->data, STR_COMMAND_FAILURE "\n");
+          }
+          strcpy((*arg->shm_obj)->data, STR_COMMAND_SUCCESS "\n");
+        } else {
+          strcpy((*arg->shm_obj)->data, STR_COMMAND_SUCCESS "\n");
         }
-        if (close(STDOUT_FILENO) != 0) {
-          PRINT_ERR("%s : %s", "close", strerror(errno));
-          ret = PTHREAD_CANCELED;
-          goto thread_die;
-        }
-        if (dup2(pipe_fd[1], STDOUT_FILENO) == -1) {
-          PRINT_ERR("%s : %s", "dup2", strerror(errno));
-          ret = PTHREAD_CANCELED;
-          goto thread_die;
-        }
-        if (close(pipe_fd[1]) != 0) {
-          PRINT_ERR("%s : %s", "close", strerror(errno));
-          ret = PTHREAD_CANCELED;
-          goto thread_die;
-        }
-
-        execvp(args[0], args);
-        ret = PTHREAD_CANCELED;
-        goto thread_die;
       } else {
+        // !built_in_command
+        //___________work___________
+        int r = fork();
+        if (r == -1) {
+          PRINT_ERR("%s : %s", "fork", strerror(errno));
+          exit(EXIT_FAILURE);
+        } else if (r == 0) {
+          //fils
+
+          if (close(pipe_fd[0]) != 0) {
+            PRINT_ERR("%s : %s", "close", strerror(errno));
+            exit(EXIT_FAILURE);
+          }
+          if (close(STDOUT_FILENO) != 0) {
+            PRINT_ERR("%s : %s", "close", strerror(errno));
+            exit(EXIT_FAILURE);
+          }
+          if (dup2(pipe_fd[1], STDOUT_FILENO) == -1) {
+            PRINT_ERR("%s : %s", "dup2", strerror(errno));
+            exit(EXIT_FAILURE);
+          }
+          if (dup2(pipe_fd[1], STDERR_FILENO) == -1) {
+            PRINT_ERR("%s : %s", "dup2", strerror(errno));
+            exit(EXIT_FAILURE);
+          }
+          if (close(pipe_fd[1]) != 0) {
+            PRINT_ERR("%s : %s", "close", strerror(errno));
+            exit(EXIT_FAILURE);
+          }
+
+
+          //ICI je pourrais checker si le programme existe avant de le
+          //    lancer ...
+          execvpe(args[0], args, environ);
+          PRINT_ERR("%s : %s", "exec", strerror(errno));
+          exit(EXIT_FAILURE);
+        }
+
         //père
+
         if (close(pipe_fd[1]) != 0) {
           PRINT_ERR("%s : %s", "close", strerror(errno));
           ret = PTHREAD_CANCELED;
@@ -512,18 +574,6 @@ void *pool_thread__run(void *param) {
           ++i;
         }
         (*arg->shm_obj)->data[i] = 0;
-
-        //and send client the output is available
-        if (sem_post(&(*arg->shm_obj)->thread_send) != 0) {
-          PRINT_ERR("%s : %s", "sem_post", strerror(errno));
-          ret = PTHREAD_CANCELED;
-          goto thread_die;
-        }
-        if (close(pipe_fd[0]) != 0) {
-          PRINT_ERR("%s : %s", "close", strerror(errno));
-          ret = PTHREAD_CANCELED;
-          goto thread_die;
-        }
         //wait the program
         int status;
         if (waitpid(r, &status, 0) == -1) {
@@ -536,6 +586,17 @@ void *pool_thread__run(void *param) {
               WEXITSTATUS(status));
         }
       }
+      //send client the output is available
+      if (sem_post(&(*arg->shm_obj)->thread_send) != 0) {
+        PRINT_ERR("%s : %s", "sem_post", strerror(errno));
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
+      }
+      if (close(pipe_fd[0]) != 0) {
+        PRINT_ERR("%s : %s", "close", strerror(errno));
+        ret = PTHREAD_CANCELED;
+        goto thread_die;
+      }
 
       if (sem_wait(&(*arg->shm_obj)->client_send) != 0) {
         PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
@@ -543,8 +604,17 @@ void *pool_thread__run(void *param) {
         goto thread_die;
       }
 
+      PRINT_INFO("%s", STR_THREAD_DONE);
+
       if (strcmp((*arg->shm_obj)->data, END) == 0) {
+        PRINT_MSG("%s", STR_POOL_THREAD_CONNEXION_CLOSED);
         continue_same_client = false;
+        //saying others I'm free
+        if (sem_wait(arg->thread_work) == -1) {
+          PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
+          ret = PTHREAD_CANCELED;
+          goto thread_die;
+        }
       } else if (strcmp((*arg->shm_obj)->data, NEW) == 0) {
         continue_same_client = true;
         if (sem_post(&(*arg->shm_obj)->new_command_ready) != 0) {
@@ -558,20 +628,21 @@ void *pool_thread__run(void *param) {
         goto thread_die;
       }
     }
-    if (!continue_same_client) {
-      PRINT_INFO("%s", STR_THREAD_DONE);
-      //finish work and saying others I'm free
-      if (sem_wait(arg->thread_work) == -1) {
-        PRINT_ERR("%s : %s", "sem_wait", strerror(errno));
-        ret = PTHREAD_CANCELED;
-        goto thread_die;
-      }
-    }
+
+
     if (remaining_work_plus_one != 0) {
            --remaining_work_plus_one;
     }
   } while (shm_fd != FD_KILL && remaining_work_plus_one != 1);
 thread_die:
+  if (index_arg != 0) {
+    //libère les args:
+    for (size_t i = 0; i < index_arg; ++i) {
+      free(args[i]);
+    }
+    free(args);
+  }
+
   if (continue_same_client) {
     if (sem_wait(arg->thread_work) == -1) {
       PRINT_ERR("%s : %s", "sem_wait", strerror(errno));

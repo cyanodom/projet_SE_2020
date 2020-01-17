@@ -22,8 +22,9 @@
 #define STR_OPEN_DAEMON_PIPE "Ouverture du pipe du démon"
 #define STR_READ_PIPE_INFORMATIONS "Lire les informations du pipe"
 #define STR_INITIALIZE "Initialiser les variables"
-#define STR_PIPE_GET_NAME "Le nom du fichier recu est :"
+#define STR_PIPE_GET_NAME "Le nom du fichier recu est"
 #define STR_DISPOSE "Libération des ressources allouées"
+#define STR_NEW_CONNECTION "Connection avec un nouveau client"
 
 static int should_be_killed = false;
 
@@ -123,7 +124,8 @@ int main(void) {
       PRINT_ERR("%s : %d", "pipe_read", pipe_read_r);
       goto error;
     }
-    PRINT_INFO("%s %s", STR_PIPE_GET_NAME, client_pipe);
+    PRINT_INFO("%s : %s", STR_PIPE_GET_NAME, client_pipe);
+    PRINT_MSG("%s", STR_NEW_CONNECTION);
 
     if (client_pipe_fd != -1) {
       //close client pipe
@@ -133,12 +135,31 @@ int main(void) {
       }
     }
 
-    //get a thread shm name
-    int pool_thread_enroll_r = pool_thread_enroll(pool, shm_name);
-    if (pool_thread_enroll_r == POOL_TRHEAD_NO_MORE_THREAD) {
-        PRINT_WARN("%s : %s", "pool_thread_enroll",
-            pool_thread_strerror(pool_thread_enroll_r));
+    //open client pipe
+    int client_pipe_fd = open(client_pipe, O_WRONLY);
+    if (client_pipe_fd == -1) {
+      PRINT_ERR("%s : %s", "open", strerror(errno));
+    } else {
+      //get a thread shm name
+      int pool_thread_enroll_r = pool_thread_enroll(pool, shm_name);
+      if (pool_thread_enroll_r == POOL_TRHEAD_NO_MORE_THREAD) {
+          PRINT_WARN("%s : %s", "pool_thread_enroll",
+              pool_thread_strerror(pool_thread_enroll_r));
 
+          //send the client there is no threads
+          if (write(client_pipe_fd, RST, strlen(RST) + 1) == -1) {
+            PRINT_ERR("%s : %s", "write", strerror(errno));
+            return EXIT_FAILURE;
+          }
+
+      } else {
+        if (pool_thread_enroll_r != POOL_THREAD_SUCCESS) {
+          PRINT_WARN("%s : %s", "pool_thread_enroll",
+              pool_thread_strerror(pool_thread_enroll_r));
+          goto error;
+        }
+
+        //send it in the client pipe
         //open client pipe
         int client_pipe_fd = open(client_pipe, O_WRONLY);
         if (client_pipe_fd == -1) {
@@ -146,31 +167,11 @@ int main(void) {
           goto error;
         }
 
-        //send the client there is no threads
-        if (write(client_pipe_fd, RST, strlen(RST) + 1) == -1) {
+        //send the message
+        if (write(client_pipe_fd, shm_name, strlen(shm_name) + 1) == -1) {
           PRINT_ERR("%s : %s", "write", strerror(errno));
-          return EXIT_FAILURE;
+          goto error;
         }
-
-    } else {
-      if (pool_thread_enroll_r != POOL_THREAD_SUCCESS) {
-        PRINT_WARN("%s : %s", "pool_thread_enroll",
-            pool_thread_strerror(pool_thread_enroll_r));
-        goto error;
-      }
-
-      //send it in the client pipe
-      //open client pipe
-      int client_pipe_fd = open(client_pipe, O_WRONLY);
-      if (client_pipe_fd == -1) {
-        PRINT_ERR("%s : %s", "open", strerror(errno));
-        goto error;
-      }
-
-      //send the message
-      if (write(client_pipe_fd, shm_name, strlen(shm_name) + 1) == -1) {
-        PRINT_ERR("%s : %s", "write", strerror(errno));
-        goto error;
       }
     }
 
@@ -185,18 +186,18 @@ error:
   r = EXIT_FAILURE;
 dispose:
   PRINT_INFO("%s", STR_DISPOSE);
+  //dispose daemon pipe
+  int pipe_dispose_r = pipe_dispose();
+  if (pipe_dispose_r != PIPE_SUCCESS) {
+    PRINT_ERR("%s : %d", "pipe_dispose", pipe_dispose_r);
+    r = EXIT_FAILURE;
+  }
   //close daemon pipe
   if (daemon_pipe_fd != -1) {
     if (close(daemon_pipe_fd) == -1) {
       PRINT_ERR("%s : %s", "close", strerror(errno));
       r = EXIT_FAILURE;
     }
-  }
-  //dispose daemon pipe
-  int pipe_dispose_r = pipe_dispose();
-  if (pipe_dispose_r != PIPE_SUCCESS) {
-    PRINT_ERR("%s : %d", "pipe_dispose", pipe_dispose_r);
-    r = EXIT_FAILURE;
   }
   //dispose threads
   int pool_thread_dispose_r = pool_thread_dispose(&pool);
