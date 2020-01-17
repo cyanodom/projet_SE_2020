@@ -4,9 +4,9 @@ toolsDir = src/tools
 
 CC = gcc
 LDFLAGS = -Wl,-z,relro,-z,now -pie -lrt -pthread
-CFLAGS = -std=c11 -Wall -Wconversion -Wextra -Wpedantic -O2 --static -g \
+CFLAGS = -std=c11 -Wall -Wconversion -Wextra -Wpedantic -O2 -Werror						 \
 	-D_POSIX_SOURCE -D_XOPEN_SOURCE=500 -D_FORTIFY_SOURCE -fstack-protector-all  \
-	-fpie -I$(toolsDir) -I$(clientDir) -I$(daemonDir) -DDEBUG_LEVEL=4
+	-fpie -I$(toolsDir) -I$(clientDir) -I$(daemonDir) -DDEBUG_LEVEL=2
 VPATH = $(clientDir):$(daemonDir):$(toolsDir)
 .PHONY = all clean
 
