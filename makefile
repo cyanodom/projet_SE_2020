@@ -37,7 +37,7 @@ $(daemonDir)/daemon.o: daemon.c load_conf.h
 $(daemonDir)/load_conf.o: load_conf.c load_conf.h
 $(daemonDir)/pool_thread.o: pool_thread.c pool_thread.h
 	$(COMPILE.c) -pthread $(OUTPUT_OPTION) $<
-$(daemonDir)/pipe.o: pipe.c pipe.h
+$(daemonDir)/pipe.o: pipe.c pipe.c
 
 $(EXEC_DAEMON): $(OBJECTS_DAEMON)
 	$(CC) $(LDFLAGS) $(OBJECTS_DAEMON) -o $(EXEC_DAEMON)
